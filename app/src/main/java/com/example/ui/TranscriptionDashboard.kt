@@ -65,6 +65,7 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val lastSyncTime by viewModel.lastSyncTime.collectAsStateWithLifecycle()
     val syncingProgress by viewModel.syncingProgress.collectAsStateWithLifecycle()
+    val currentTheme by viewModel.selectedTheme.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf("record") } // "record" or "history"
     var showLanguageSheet by remember { mutableStateOf(false) }
@@ -105,12 +106,13 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
         }
     }
 
-    Scaffold(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("scaffold_root"),
-        contentWindowInsets = WindowInsets.safeDrawing
-    ) { innerPadding ->
+    CompositionLocalProvider(com.example.ui.components.LocalAppTheme provides currentTheme) {
+        Scaffold(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("scaffold_root"),
+            contentWindowInsets = WindowInsets.safeDrawing
+        ) { innerPadding ->
         FrostedGlassBackground(
             modifier = Modifier
                 .fillMaxSize()
@@ -462,7 +464,7 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
                                     modifier = Modifier.fillMaxSize(),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (recordingState == RecordingState.RECORDING) {
+                                    if (recordingState == RecordingState.RECORDING || recordingState == RecordingState.PAUSED) {
                                         // Living Animated Bars
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
@@ -517,7 +519,7 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
                             Spacer(modifier = Modifier.height(16.dp))
 
                             // Real-time Text Box (Translates physically in real-time)
-                            if (recordingState == RecordingState.RECORDING || realtimeText.isNotBlank()) {
+                            if (recordingState == RecordingState.RECORDING || recordingState == RecordingState.PAUSED || realtimeText.isNotBlank()) {
                                 Text(
                                     text = "LIVE SPEECH PREVIEW",
                                     fontSize = 11.sp,
@@ -535,7 +537,10 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
                                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                                         item {
                                             Text(
-                                                text = realtimeText.ifBlank { "Listening for speech... (${selectedLanguage.name})" },
+                                                text = if (realtimeText.isBlank()) {
+                                                    if (recordingState == RecordingState.PAUSED) "Recording is Paused. Tap Resume to continue transcribing."
+                                                    else "Listening for speech... (${selectedLanguage.name})"
+                                                } else realtimeText,
                                                 fontSize = 14.sp,
                                                 lineHeight = 20.sp,
                                                 color = if (realtimeText.isBlank()) {
@@ -573,20 +578,58 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
                                         }
                                     }
 
-                                    RecordingState.RECORDING -> {
-                                        Soft3DButton(
-                                            onClick = { viewModel.stopRecording(context) },
-                                            containerColor = AlertRed,
-                                            modifier = Modifier.fillMaxWidth(0.8f),
-                                            testTag = "stop_recording_button"
+                                    RecordingState.RECORDING, RecordingState.PAUSED -> {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(0.9f),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Stop,
-                                                contentDescription = "Stop Icon",
-                                                tint = Color.White
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Finish & Analyze with AI", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = Color.White)
+                                            // 1. Pause/Resume button
+                                            if (recordingState == RecordingState.RECORDING) {
+                                                Soft3DButton(
+                                                    onClick = { viewModel.pauseRecording() },
+                                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                                    modifier = Modifier.weight(0.38f),
+                                                    testTag = "pause_recording_button"
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Pause,
+                                                        contentDescription = "Pause Icon"
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Pause", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                }
+                                            } else {
+                                                Soft3DButton(
+                                                    onClick = { viewModel.resumeRecording(context) },
+                                                    containerColor = MaterialTheme.colorScheme.tertiary,
+                                                    modifier = Modifier.weight(0.38f),
+                                                    testTag = "resume_recording_button"
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PlayArrow,
+                                                        contentDescription = "Resume Icon"
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Resume", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                                }
+                                            }
+
+                                            // 2. Finish button
+                                            Soft3DButton(
+                                                onClick = { viewModel.stopRecording(context) },
+                                                containerColor = AlertRed,
+                                                modifier = Modifier.weight(0.62f),
+                                                testTag = "stop_recording_button"
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Stop,
+                                                    contentDescription = "Stop Icon",
+                                                    tint = Color.White
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text("Finish & Analyze", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White)
+                                            }
                                         }
                                     }
 
@@ -634,49 +677,108 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
                                     )
                                     .padding(12.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.CloudQueue,
-                                            contentDescription = "Backup settings",
-                                            tint = MaterialTheme.colorScheme.secondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Column {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    // Theme Selection Row
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Palette,
+                                                contentDescription = "Theme selection",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "Enable Cloud Backups",
+                                                text = "Select App UI Theme Style",
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 13.sp,
                                                 color = MaterialTheme.colorScheme.onBackground
-                                            )
-                                            Text(
-                                                text = "Never lose your files",
-                                                fontSize = 11.sp,
-                                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
-                                            )
-                                        }
-                                    }
+                                             )
+                                         }
+                                         Spacer(modifier = Modifier.height(8.dp))
+                                         Row(
+                                             modifier = Modifier.fillMaxWidth(),
+                                             horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                         ) {
+                                             com.example.ui.components.AppTheme.values().forEach { themeVariant ->
+                                                 val isThemeSelected = currentTheme == themeVariant
+                                                 Box(
+                                                     modifier = Modifier
+                                                         .weight(1f)
+                                                         .clip(RoundedCornerShape(10.dp))
+                                                         .background(
+                                                             if (isThemeSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                                             else Color.Transparent
+                                                         )
+                                                         .border(
+                                                             1.dp,
+                                                             if (isThemeSelected) MaterialTheme.colorScheme.primary
+                                                             else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.1f),
+                                                             RoundedCornerShape(10.dp)
+                                                         )
+                                                         .clickable { viewModel.setTheme(themeVariant) }
+                                                         .padding(vertical = 6.dp),
+                                                     contentAlignment = Alignment.Center
+                                                 ) {
+                                                     Text(
+                                                         text = themeVariant.displayName,
+                                                         fontSize = 10.sp,
+                                                         fontWeight = FontWeight.Bold,
+                                                         color = if (isThemeSelected) MaterialTheme.colorScheme.primary
+                                                         else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                                                     )
+                                                 }
+                                             }
+                                         }
+                                     }
 
-                                    Switch(
-                                        checked = isCloudBackupEnabled,
-                                        onCheckedChange = { viewModel.setCloudBackupEnabled(it) },
-                                        thumbContent = {
-                                            if (isCloudBackupEnabled) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.Check,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(SwitchDefaults.IconSize),
-                                                )
-                                            }
-                                        }
-                                    )
-                                }
-                            }
+                                     HorizontalDivider(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.05f))
+
+                                     // Backup Settings Row
+                                     Row(
+                                         modifier = Modifier.fillMaxWidth(),
+                                         horizontalArrangement = Arrangement.SpaceBetween,
+                                         verticalAlignment = Alignment.CenterVertically
+                                     ) {
+                                         Row(verticalAlignment = Alignment.CenterVertically) {
+                                             Icon(
+                                                 imageVector = Icons.Default.CloudQueue,
+                                                 contentDescription = "Backup settings",
+                                                 tint = MaterialTheme.colorScheme.secondary,
+                                                 modifier = Modifier.size(18.dp)
+                                             )
+                                             Spacer(modifier = Modifier.width(8.dp))
+                                             Column {
+                                                 Text(
+                                                     text = "Enable Cloud Backups",
+                                                     fontWeight = FontWeight.Bold,
+                                                     fontSize = 13.sp,
+                                                     color = MaterialTheme.colorScheme.onBackground
+                                                 )
+                                                 Text(
+                                                     text = "Never lose your files",
+                                                     fontSize = 11.sp,
+                                                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                                 )
+                                             }
+                                         }
+
+                                         Switch(
+                                             checked = isCloudBackupEnabled,
+                                             onCheckedChange = { viewModel.setCloudBackupEnabled(it) },
+                                             thumbContent = {
+                                                 if (isCloudBackupEnabled) {
+                                                     Icon(
+                                                         imageVector = Icons.Filled.Check,
+                                                         contentDescription = null,
+                                                         modifier = Modifier.size(SwitchDefaults.IconSize),
+                                                     )
+                                                 }
+                                             }
+                                         )
+                                     }
+                                 }
+                             }
                         }
                     } else {
                         // 2. CONVERSATIONS LIST TAB
@@ -871,6 +973,7 @@ fun TranscriptionDashboard(viewModel: TranscriptionViewModel) {
             }
         }
     }
+    }
 }
 
 // 3D Conversation Item representation in History Tab
@@ -1025,6 +1128,9 @@ fun SwipeTranscriptDetailView(
     val playingFile by viewModel.playingFile.collectAsStateWithLifecycle()
     val playbackProgress by viewModel.playbackProgress.collectAsStateWithLifecycle()
 
+    var isEditing by remember { mutableStateOf(false) }
+    var editedText by remember(entity.formattedTranscript) { mutableStateOf(entity.formattedTranscript) }
+
     FrostedGlassBackground(
         modifier = Modifier
             .fillMaxSize()
@@ -1133,8 +1239,145 @@ fun SwipeTranscriptDetailView(
 
                 // Diarized Text Block
                 item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "INTELLIGENT RECONSTRUCTION",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.secondary,
+                            letterSpacing = 1.sp
+                        )
+                        Soft3DButton(
+                            onClick = { isEditing = !isEditing },
+                            depth = 2.dp,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.height(30.dp),
+                            containerColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.8f)
+                        ) {
+                            Icon(
+                                imageVector = if (isEditing) Icons.Default.Check else Icons.Default.Edit,
+                                contentDescription = if (isEditing) "Done" else "Edit",
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(if (isEditing) "Done" else "Edit Text", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                item {
+                    Soft3DCard(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column {
+                            if (isEditing) {
+                                Text(
+                                    text = "Tap block to adjust details. Retain 'Speaker A:' lines to keep speaker highlight styles.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.padding(bottom = 6.dp)
+                                )
+                                OutlinedTextField(
+                                    value = editedText,
+                                    onValueChange = {
+                                        editedText = it
+                                        viewModel.updateFormattedTranscript(entity, it)
+                                    },
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 320.dp),
+                                    textStyle = androidx.compose.ui.text.TextStyle(
+                                        fontSize = 13.sp,
+                                        lineHeight = 18.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                )
+                            } else {
+                                // Render transcript layout beautifully
+                                val paragraphs = entity.formattedTranscript.split("\n")
+                                for (line in paragraphs) {
+                                    if (line.trim().isNotBlank()) {
+                                        if (line.startsWith("**Conversation Summary") || line.startsWith("**Diarized")) {
+                                            Text(
+                                                text = line.replace("**", ""),
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 14.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
+                                            )
+                                        } else if (line.contains(":") && !line.startsWith("http")) {
+                                            // Highlight speaker bubbles representation
+                                            val parts = line.split(":", limit = 2)
+                                            val speakerTag = parts[0].replace("**", "").replace("`", "").trim()
+                                            val talkText = parts[1].replace("**", "").trim()
+
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 4.dp)
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(
+                                                        if (speakerTag.contains("Speaker A") || speakerTag.contains("Advisor")) {
+                                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+                                                        } else {
+                                                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.05f)
+                                                        }
+                                                    )
+                                                    .padding(8.dp)
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.AccountCircle,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(16.dp),
+                                                        tint = if (speakerTag.contains("Speaker A") || speakerTag.contains("Advisor")) {
+                                                            MaterialTheme.colorScheme.primary
+                                                        } else {
+                                                            MaterialTheme.colorScheme.secondary
+                                                        }
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        text = speakerTag,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontSize = 12.sp,
+                                                        color = if (speakerTag.contains("Speaker A") || speakerTag.contains("Advisor")) {
+                                                            MaterialTheme.colorScheme.primary
+                                                        } else {
+                                                            MaterialTheme.colorScheme.secondary
+                                                        }
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(3.dp))
+                                                Text(
+                                                    text = talkText,
+                                                    fontSize = 13.sp,
+                                                    lineHeight = 18.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        } else {
+                                            Text(
+                                                text = line,
+                                                fontSize = 13.sp,
+                                                lineHeight = 18.sp,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                                                modifier = Modifier.padding(vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Append Conversation Pad
+                item {
                     Text(
-                        text = "INTELLIGENT RECONSTRUCTION",
+                        text = "ADD CONVERSATIONAL RECORDING",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = MaterialTheme.colorScheme.secondary,
@@ -1146,80 +1389,107 @@ fun SwipeTranscriptDetailView(
                     Soft3DCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column {
-                            // Render transcript layout beautifully
-                            val paragraphs = entity.formattedTranscript.split("\n")
-                            for (line in paragraphs) {
-                                if (line.trim().isNotBlank()) {
-                                    if (line.startsWith("**Conversation Summary") || line.startsWith("**Diarized")) {
-                                        Text(
-                                            text = line.replace("**", ""),
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (recordingState == RecordingState.IDLE) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Soft3DButton(
+                                        onClick = { 
+                                            // Select this transcript as the active one, and start appending
+                                            viewModel.selectTranscript(entity.id)
+                                            viewModel.startRecording(context, isAppending = true) 
+                                        },
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        testTag = "append_recording_button"
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Mic,
+                                            contentDescription = "Append audio dialogue icon"
                                         )
-                                    } else if (line.contains(":") && !line.startsWith("http")) {
-                                        // Highlight speaker bubbles representation
-                                        val parts = line.split(":", limit = 2)
-                                        val speakerTag = parts[0].replace("**", "").replace("`", "").trim()
-                                        val talkText = parts[1].replace("**", "").trim()
-
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(vertical = 4.dp)
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(
-                                                    if (speakerTag.contains("Speaker A") || speakerTag.contains("Advisor")) {
-                                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
-                                                    } else {
-                                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.05f)
-                                                    }
-                                                )
-                                                .padding(8.dp)
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(
-                                                    imageVector = Icons.Default.AccountCircle,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(16.dp),
-                                                    tint = if (speakerTag.contains("Speaker A") || speakerTag.contains("Advisor")) {
-                                                        MaterialTheme.colorScheme.primary
-                                                    } else {
-                                                        MaterialTheme.colorScheme.secondary
-                                                    }
-                                                )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text(
-                                                    text = speakerTag,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 12.sp,
-                                                    color = if (speakerTag.contains("Speaker A") || speakerTag.contains("Advisor")) {
-                                                        MaterialTheme.colorScheme.primary
-                                                    } else {
-                                                        MaterialTheme.colorScheme.secondary
-                                                    }
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.height(3.dp))
-                                            Text(
-                                                text = talkText,
-                                                fontSize = 13.sp,
-                                                lineHeight = 18.sp,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                        }
-                                    } else {
-                                        Text(
-                                            text = line,
-                                            fontSize = 13.sp,
-                                            lineHeight = 18.sp,
-                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                                            modifier = Modifier.padding(vertical = 2.dp)
-                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Record & Append Voice", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                     }
                                 }
+                            } else if (viewModel.activeTranscriptId.value == entity.id && 
+                                (recordingState == RecordingState.RECORDING || recordingState == RecordingState.PAUSED || recordingState == RecordingState.PROCESSING)
+                            ) {
+                                // Currently appending to THIS conversation
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Currently appending voice to this dialogue...",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    
+                                    if (recordingState == RecordingState.PROCESSING) {
+                                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                    } else {
+                                        Text(
+                                            text = if (recordingState == RecordingState.PAUSED) "Recording is Paused" else "Listening and transcribing live...",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.secondary
+                                        )
+                                        
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            // Pause / Resume Append trigger
+                                            if (recordingState == RecordingState.RECORDING) {
+                                                Soft3DButton(
+                                                    onClick = { viewModel.pauseRecording() },
+                                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Icon(Icons.Default.Pause, contentDescription = "Pause append")
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Pause", fontSize = 11.sp)
+                                                }
+                                            } else {
+                                                Soft3DButton(
+                                                    onClick = { viewModel.resumeRecording(context) },
+                                                    containerColor = MaterialTheme.colorScheme.tertiary,
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Icon(Icons.Default.PlayArrow, contentDescription = "Resume append")
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Resume", fontSize = 11.sp)
+                                                }
+                                            }
+                                            
+                                            // Stop and complete append triggers save query in stopRecording()
+                                            Soft3DButton(
+                                                onClick = { viewModel.stopRecording(context) },
+                                                containerColor = AlertRed,
+                                                modifier = Modifier.weight(1.5f)
+                                            ) {
+                                                Icon(Icons.Default.Stop, contentDescription = "Complete append", tint = Color.White)
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Finish Append", color = Color.White, fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Recording elsewhere or idle
+                                Text(
+                                    text = "Can record and append voice dialog into this transcript timeline offline.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
                             }
                         }
                     }

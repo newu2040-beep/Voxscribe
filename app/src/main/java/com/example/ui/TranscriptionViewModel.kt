@@ -35,9 +35,10 @@ import java.io.FileOutputStream
 import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.*
+import com.example.ui.components.AppTheme
 
 enum class RecordingState {
-    IDLE, RECORDING, PROCESSING, PLAYING
+    IDLE, RECORDING, PAUSED, PROCESSING, PLAYING
 }
 
 data class TranscribeLanguage(
@@ -58,6 +59,20 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+
+    // Dynamic Selected Theme State
+    private val _selectedTheme = MutableStateFlow(AppTheme.FROSTED_GLASS)
+    val selectedTheme: StateFlow<AppTheme> = _selectedTheme.asStateFlow()
+
+    fun setTheme(theme: AppTheme) {
+        _selectedTheme.value = theme
+    }
+
+    // Interactive trackers for pause/resume & conversational additions
+    private var accumulatedDuration = 0L
+    private var lastResumeTime = 0L
+    private var isAppendingToTranscript = false
+    private var currentTokenIndex = 0
 
     // Core States
     private val _recordingState = MutableStateFlow(RecordingState.IDLE)
@@ -177,10 +192,14 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
     }
 
     // Start Audio recording and live transcription listener
-    fun startRecording(context: Context) {
+    fun startRecording(context: Context, isAppending: Boolean = false) {
         _realtimeText.value = ""
         _recordingState.value = RecordingState.RECORDING
         recordingStartTime = System.currentTimeMillis()
+        accumulatedDuration = 0L
+        lastResumeTime = System.currentTimeMillis()
+        isAppendingToTranscript = isAppending
+        currentTokenIndex = 0
 
         // Prepare local file to save audio recording
         animateVirtualAmplitudeAndText()
@@ -248,6 +267,64 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    fun pauseRecording() {
+        if (_recordingState.value != RecordingState.RECORDING) return
+        _recordingState.value = RecordingState.PAUSED
+        
+        // Accumulate active duration up to this pause
+        accumulatedDuration += System.currentTimeMillis() - lastResumeTime
+        
+        // Pause hardware recorder
+        try {
+            mediaRecorder?.pause()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        // Stop speech listener
+        try {
+            speechRecognizer?.stopListening()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        // Clean up active visualizer & dialogue handlers to freeze display
+        amplitudeTimer?.cancel()
+        amplitudeTimer = null
+        virtualTranscriptJob?.removeCallbacksAndMessages(null)
+        virtualTranscriptJob = null
+    }
+
+    fun resumeRecording(context: Context) {
+        if (_recordingState.value != RecordingState.PAUSED) return
+        _recordingState.value = RecordingState.RECORDING
+        lastResumeTime = System.currentTimeMillis()
+        
+        // Resume hardware recorder
+        try {
+            mediaRecorder?.resume()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        // Restart the waveform visualizer and dialogue typing loops
+        animateVirtualAmplitudeAndText()
+        
+        // Restart speech listen intent
+        try {
+            if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, _selectedLanguage.value.code)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                }
+                speechRecognizer?.startListening(intent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun updateWaveAmplitudes(amplitude: Float) {
         val currentList = _amplitudes.value.toMutableList()
         currentList.removeAt(0)
@@ -301,7 +378,6 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         }
 
         virtualTranscriptJob = Handler(Looper.getMainLooper())
-        var currentTokenIndex = 0
         val typingSpeed = 5000L // every 5 seconds add a dialog line to realtime preview
 
         val runnable = object : Runnable {
@@ -323,7 +399,14 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
 
     // Stop recording, invoke Gemini to diarize & categorize with premium speaker tags
     fun stopRecording(context: Context, customTitle: String = "") {
-        if (_recordingState.value != RecordingState.RECORDING) return
+        if (_recordingState.value != RecordingState.RECORDING && _recordingState.value != RecordingState.PAUSED) return
+        
+        val activeDuration = if (_recordingState.value == RecordingState.PAUSED) {
+            accumulatedDuration
+        } else {
+            accumulatedDuration + (System.currentTimeMillis() - lastResumeTime)
+        }
+        
         _recordingState.value = RecordingState.PROCESSING
 
         // Stop timers
@@ -353,7 +436,7 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         }
         speechRecognizer = null
 
-        val duration = System.currentTimeMillis() - recordingStartTime
+        val finalDuration = activeDuration
         val rawPreviewText = _realtimeText.value.ifBlank { _selectedLanguage.value.sampleText }
         val filePath = audioFile?.absolutePath ?: ""
         val languageName = _selectedLanguage.value.name
@@ -378,30 +461,61 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                 )
             }
 
-            // Process saving in local Room
+            // Process saving/appending in local Room
             withContext(Dispatchers.IO) {
-                val entity = TranscriptEntity(
-                    title = title,
-                    filePath = filePath,
-                    durationMs = duration,
-                    rawText = rawPreviewText,
-                    formattedTranscript = responseText,
-                    languageName = languageName,
-                    languageCode = languageCode,
-                    speakerCount = spCount,
-                    isSynced = false
-                )
-                val newId = repository.insertTranscript(entity)
-                
-                withContext(Dispatchers.Main) {
-                    _activeTranscriptId.value = newId.toInt()
-                    _recordingState.value = RecordingState.IDLE
-                    Toast.makeText(context, "Transcription processed successfully!", Toast.LENGTH_SHORT).show()
+                if (isAppendingToTranscript && _activeTranscriptId.value != null) {
+                    val currentId = _activeTranscriptId.value!!
+                    val existing = repository.getTranscriptByIdOneShot(currentId)
+                    if (existing != null) {
+                        val separator = "\n\n**[Conversational Addition]**\n"
+                        val updatedFormatted = existing.formattedTranscript + separator + responseText
+                        val updatedRaw = existing.rawText + " " + rawPreviewText
+                        val updatedTotalDuration = existing.durationMs + finalDuration
+                        
+                        val updatedEntity = existing.copy(
+                            formattedTranscript = updatedFormatted,
+                            rawText = updatedRaw,
+                            durationMs = updatedTotalDuration,
+                            isSynced = false
+                        )
+                        repository.updateTranscript(updatedEntity)
+                    }
+                    isAppendingToTranscript = false
+                    withContext(Dispatchers.Main) {
+                        _recordingState.value = RecordingState.IDLE
+                        Toast.makeText(context, "Conversational voice added successfully!", Toast.LENGTH_SHORT).show()
+                        triggerMockCloudSync()
+                    }
+                } else {
+                    val entity = TranscriptEntity(
+                        title = title,
+                        filePath = filePath,
+                        durationMs = finalDuration,
+                        rawText = rawPreviewText,
+                        formattedTranscript = responseText,
+                        languageName = languageName,
+                        languageCode = languageCode,
+                        speakerCount = spCount,
+                        isSynced = false
+                    )
+                    val newId = repository.insertTranscript(entity)
                     
-                    // Trigger Auto Sync Backups
-                    triggerMockCloudSync()
+                    withContext(Dispatchers.Main) {
+                        _activeTranscriptId.value = newId.toInt()
+                        _recordingState.value = RecordingState.IDLE
+                        Toast.makeText(context, "Transcription processed successfully!", Toast.LENGTH_SHORT).show()
+                        
+                        // Trigger Auto Sync Backups
+                        triggerMockCloudSync()
+                    }
                 }
             }
+        }
+    }
+
+    fun updateFormattedTranscript(transcript: TranscriptEntity, newText: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.updateTranscript(transcript.copy(formattedTranscript = newText))
         }
     }
 

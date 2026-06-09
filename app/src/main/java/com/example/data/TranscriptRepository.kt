@@ -9,6 +9,10 @@ class TranscriptRepository(private val transcriptDao: TranscriptDao) {
         return transcriptDao.getTranscriptById(id)
     }
 
+    suspend fun getTranscriptByIdOneShot(id: Int): TranscriptEntity? {
+        return transcriptDao.getTranscriptByIdOneShot(id)
+    }
+
     suspend fun insertTranscript(transcript: TranscriptEntity): Long {
         return transcriptDao.insertTranscript(transcript)
     }
