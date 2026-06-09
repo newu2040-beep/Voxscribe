@@ -1,0 +1,6 @@
+{
+  "name": "VoxScribe",
+  "description": "Offline speech transcription and real-time speaker diarization with a premium frosted glass design theme.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
